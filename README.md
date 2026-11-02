@@ -54,8 +54,8 @@ Sans lui, l'image est publiée mais pas déployée (avertissement dans Actions).
 
 - **Conteneurs** : sans root, lecture seule, aucune capability, `no-new-privileges`, limites
   mémoire/processus, un réseau isolé par appli Django, projet compose `hugomeuriel` séparé de deva2.
-- **Réseau** : ports publiés sur 192.168.11.134 seulement, règle DOCKER-USER limitée à 8101-8112
-  (seul .131 y accède ; les conteneurs deva2 ne sont pas touchés).
+- **Réseau** : ports 8101-8112 publiés sur 192.168.11.134 seulement (pas d'exposition Internet ;
+  joignables depuis le réseau local et le VPN, en plus de l'Apache de .131).
 - **Navigateur** : CSP par site, HSTS, nosniff, X-Frame-Options, Referrer-Policy, Permissions-Policy, SRI.
 - **Météo** : clés d'API ajoutées par Nginx côté serveur, 30 requêtes/min par visiteur.
 - **Django** : DEBUG off, SECRET_KEY obligatoire, cookies sécurisés, CSRF sur les suppressions,
