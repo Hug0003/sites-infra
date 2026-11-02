@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  DEPLOY_PATH: /opt/sites
+  DEPLOY_PATH: /opt/hugo-portfolio
 
 jobs:
   deploy:

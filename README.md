@@ -7,12 +7,12 @@ push sur main d'un site ─► GitHub Actions : build + contrôles ─► image 
                                     │ événement « site-updated »
                                     ▼
                  sites-infra : workflow Deploy (VPN IKEv2 + SSH hugo-portfolio@.134)
-                   copie docker-compose.yml, nginx/*.conf, env/*.env (secrets) → /opt/sites
+                   copie docker-compose.yml, nginx/*.conf, env/*.env (secrets) → /opt/hugo-portfolio
                    docker compose pull + up -d, puis vérification de chaque site
 Internet ─► .131 Apache (HTTPS, HSTS) ─► hugomeuriel.fr/ et hugomeuriel.fr/projets/<nom>/ ─► .134:81xx
 ```
 
-**Aucun code ni repo sur le serveur** : `/opt/sites` ne contient que ce que le workflow y dépose
+**Aucun code ni repo sur le serveur** : `/opt/hugo-portfolio` ne contient que ce que le workflow y dépose
 (compose, configs Nginx, fichiers .env) et les données des applis Django (`data/`).
 Le jeton GHCR n'y reste pas : il sert le temps du `docker pull`, dans un dossier temporaire.
 
