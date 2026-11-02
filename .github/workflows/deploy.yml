@@ -112,7 +112,19 @@ jobs:
 
           sudo ipsec restart
           sleep 5
-          sudo ipsec up freebox
+          sudo ipsec up freebox || true
+
+          # Arrêt immédiat si le tunnel n'est pas monté (sinon l'erreur n'apparaît qu'au SSH, en timeout).
+          if ! sudo ipsec status | grep -q ESTABLISHED; then
+            if sudo journalctl -u strongswan-starter --no-pager 2>/dev/null | grep -q AUTHENTICATION_FAILURE \
+               || sudo ipsec statusall 2>/dev/null | grep -q AUTH_FAILED; then
+              echo "::error::VPN refusé : VPN_USER ou VPN_PASSWORD incorrect."
+            else
+              echo "::error::Le tunnel VPN ne s'est pas établi (voir le log ci-dessus)."
+            fi
+            exit 1
+          fi
+          echo "Tunnel VPN établi."
 
       # Diagnostic réseau (aucun secret affiché) : état du tunnel, adresse reçue, route vers le serveur.
       - name: Network diagnostics
