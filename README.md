@@ -62,27 +62,38 @@ Ces secrets ont été retirés des fichiers, mais **ils restent dans l'historiqu
 
 ## 2. Serveur 192.168.11.134
 
+Docker y est déjà installé (serveur partagé avec deva2). Il manque l'utilisateur dédié :
+
 ```bash
-curl -fsSL https://get.docker.com | sh
-sudo useradd -m -s /bin/bash -G docker deploy
-sudo mkdir -p /opt/sites && sudo chown deploy:deploy /opt/sites
-# copier ce dossier dans /opt/sites (ou git clone si sites-infra devient un repo)
-sudo -u deploy chmod +x /opt/sites/update.sh
+# Ports libres ? (deva2 utilise déjà 9050, etc.) — rien ne doit répondre sur 8101-8112
+ss -ltn | grep -E ':81(0[1-8]|1[12]) ' || echo "ports libres"
+
+# Utilisateur qui fait tourner les sites hugomeuriel (groupe docker, pas de sudo)
+sudo useradd -m -s /bin/bash -G docker hugo-portfolio
+sudo mkdir -p /opt/sites && sudo chown hugo-portfolio:hugo-portfolio /opt/sites
+
+# Clé de déploiement en lecture seule pour le repo privé sites-infra
+sudo -u hugo-portfolio ssh-keygen -t ed25519 -N "" -f /home/hugo-portfolio/.ssh/sites-infra -C hugo-portfolio@deva2
+sudo -u hugo-portfolio cat /home/hugo-portfolio/.ssh/sites-infra.pub
+#   → GitHub : Hug0003/sites-infra → Settings → Deploy keys → Add (sans « Allow write access »)
+sudo -u hugo-portfolio git -c core.sshCommand="ssh -i ~/.ssh/sites-infra" clone git@github.com:Hug0003/sites-infra.git /opt/sites
+sudo -u hugo-portfolio git -C /opt/sites config core.sshCommand "ssh -i ~/.ssh/sites-infra"
 
 # Accès aux images GHCR : token GitHub « classic » avec uniquement read:packages
-sudo -u deploy docker login ghcr.io -u Hug0003
+sudo -u hugo-portfolio docker login ghcr.io -u Hug0003
 
-# Ports des sites : uniquement depuis l'Apache (DOCKER-USER, car Docker passe avant ufw)
-sudo iptables -I DOCKER-USER -p tcp -m multiport --dports 8080 ! -s 192.168.11.131 -j DROP
-sudo apt install iptables-persistent && sudo netfilter-persistent save
+# Ports des sites joignables uniquement depuis l'Apache. La règle ne vise que 8101-8112
+# (port d'origine, avant la redirection Docker) : les conteneurs deva2 ne sont pas touchés.
+sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8101:8112 --ctdir ORIGINAL ! -s 192.168.11.131 -j DROP
+sudo netfilter-persistent save    # ou la méthode déjà utilisée sur ce serveur pour garder les règles
 
-# Mise à jour automatique
+# Mise à jour automatique (git pull du repo + nouvelles images, toutes les 2 min)
 sudo cp /opt/sites/systemd/sites-update.* /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now sites-update.timer
 ```
 
-La règle DOCKER-USER filtre le port **interne** des conteneurs (8080) : tout trafic vers un site
-qui ne vient pas de l'Apache est rejeté.
+Les conteneurs portent le préfixe `hugomeuriel-` (nom du projet compose) : aucun risque de collision
+avec ceux de deva2.
 
 Si l'adresse du serveur n'est pas 192.168.11.134, créer `/opt/sites/.env` avec `HOST_IP=<adresse>`.
 
@@ -97,6 +108,7 @@ cp env/django.env.example env/pizzamama.env       # autre clé, autre adresse d'
 cp env/sunorcloud.env.example env/sunorcloud.env  # nouvelles clés OWM / OpenCage
 chmod 600 env/*.env
 mkdir -p data/crushbrito/media data/pizzamama/media && sudo chown -R 1000:1000 data
+sudo systemctl start sites-update   # premier lancement sans attendre le timer
 ```
 
 ## 4. Données de production (crushbrito, pizzamama)
@@ -105,22 +117,23 @@ Depuis le PC (VPN actif), juste avant la bascule DNS :
 
 ```bash
 ssh -t rasp "sudo tar czf /tmp/crushbrito.tgz -C /var/www/crushbrito/osculte db.sqlite3 media && sudo chmod 644 /tmp/crushbrito.tgz"
-scp rasp:/tmp/crushbrito.tgz . && scp crushbrito.tgz deploy@192.168.11.134:/opt/sites/data/crushbrito/
-ssh deploy@192.168.11.134 "cd /opt/sites/data/crushbrito && tar xzf crushbrito.tgz && rm crushbrito.tgz && sudo chown -R 1000:1000 ."
+scp rasp:/tmp/crushbrito.tgz . && scp crushbrito.tgz <ton-compte-admin>@192.168.11.134:/tmp/
+ssh -t <ton-compte-admin>@192.168.11.134 "sudo tar xzf /tmp/crushbrito.tgz -C /opt/sites/data/crushbrito && sudo chown -R 1000:1000 /opt/sites/data/crushbrito && rm /tmp/crushbrito.tgz"
 ssh rasp "rm /tmp/crushbrito.tgz"
 ```
+
+(1000 = utilisateur qui fait tourner Django dans le conteneur.)
 
 Pareil pour pizzamama (`/var/www/pizzamama/pizzeria`). Les migrations s'appliquent au démarrage.
 
 ## 5. Apache 192.168.11.131
 
-Fichiers du dossier `apache/` :
+`apache/hugomeuriel-sites.conf` suit le même modèle que le vhost de deva2.fr (challenge Let's Encrypt
+servi depuis `/var/www/letsencrypt`, proxy vers .134) et y ajoute : les chemins `/projets/`,
+`X-Forwarded-Proto` pour Django, HSTS et la redirection des anciens sous-domaines.
+Il ne touche à aucune configuration globale d'Apache : deva2.fr n'est pas affecté.
 
-- `security.conf` : version masquée, TRACE désactivé, TLS 1.2+ ;
-- `000-default.conf` : toute requête qui n'est pas pour hugomeuriel.fr reçoit 403 ;
-- `hugomeuriel-sites.conf` : le domaine, les chemins `/projets/`, HSTS, redirection des anciens sous-domaines.
-
-Les commandes d'installation sont en tête de `hugomeuriel-sites.conf`. Test depuis le VPN, avant le DNS :
+Les commandes d'installation sont en tête du fichier. Test depuis le VPN, avant le DNS :
 
 ```bash
 curl -I -H "Host: hugomeuriel.fr" http://192.168.11.131/projets/natours/

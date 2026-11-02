@@ -18,6 +18,9 @@
 # Les ports n'écoutent que sur l'adresse du serveur dans le réseau de l'ami (HOST_IP),
 # jamais sur une autre interface.
 
+# Serveur partagé avec deva2 : préfixe propre pour les conteneurs, réseaux et volumes.
+name: hugomeuriel
+
 x-hardening: &hardening
   restart: unless-stopped
   # Système de fichiers en lecture seule, aucun privilège : un site compromis ne peut ni
