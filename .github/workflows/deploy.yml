@@ -114,6 +114,22 @@ jobs:
           sleep 5
           sudo ipsec up freebox
 
+      # Diagnostic réseau (aucun secret affiché) : état du tunnel, adresse reçue, route vers le serveur.
+      - name: Network diagnostics
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          echo "--- Tunnel IPsec"
+          sudo ipsec status 2>/dev/null | grep -E 'ESTABLISHED|INSTALLED|===' | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/<ip>/g' || echo "pas de tunnel"
+          echo "--- Adresse VPN reçue par le runner (plage seulement)"
+          ip -4 -o addr show | awk '{print $2, $4}' | sed -E 's/\.[0-9]+\//.x\//'
+          echo "--- Route vers le serveur"
+          ip route get "$SSH_HOST" | sed "s/$SSH_HOST/<serveur>/" || true
+          echo "--- Ping"
+          ping -c 2 -W 3 "$SSH_HOST" > /dev/null 2>&1 && echo "ping OK" || echo "ping KO (peut être normal si ICMP filtré)"
+          echo "--- Port SSH"
+          if timeout 8 bash -c "</dev/tcp/$SSH_HOST/22" 2>/dev/null; then echo "port 22 OUVERT"; else echo "port 22 INJOIGNABLE"; fi
+
       - name: Deploy via SSH
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
