@@ -1,9 +1,0 @@
-[Unit]
-Description=Mise à jour des sites hugomeuriel (docker compose pull + up)
-After=docker.service network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=hugo-portfolio
-ExecStart=/opt/sites/update.sh

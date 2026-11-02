@@ -1,9 +1,7 @@
 name: Build and publish
 
 # Push sur main → image construite et publiée sur GHCR (tags « latest » et SHA du commit).
-# Le serveur 192.168.11.134 n'est pas joignable depuis GitHub (VPN) : c'est lui qui vient
-# chercher la nouvelle image toutes les 2 minutes (timer sites-update de sites-infra).
-# Aucun secret, aucun VPN, aucune connexion SSH dans ce workflow.
+# Puis le workflow de sites-infra déploie l'image sur 192.168.11.134 (VPN + SSH).
 on:
   push:
     branches: [main]
@@ -58,3 +56,20 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Demande à sites-infra de déployer la nouvelle image sur 192.168.11.134 (VPN géré là-bas).
+      # Secret SITES_DEPLOY_TOKEN : jeton fine-grained limité au repo sites-infra (Contents: Read and write).
+      - name: Trigger deployment
+        if: github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ secrets.SITES_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::Secret SITES_DEPLOY_TOKEN absent : image publiée mais pas déployée."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Hug0003/sites-infra/dispatches \
+            -d '{"event_type":"site-updated","client_payload":{"repo":"${{ github.repository }}","sha":"${{ github.sha }}"}}'

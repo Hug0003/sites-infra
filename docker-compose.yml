@@ -1,7 +1,7 @@
 # Tous les sites de hugomeuriel.fr, sur 192.168.11.134 (dossier /opt/sites).
 # Un seul site public : hugomeuriel.fr. Les projets sont servis sous hugomeuriel.fr/projets/<nom>/
 # par l'Apache de 192.168.11.131, qui envoie chaque chemin vers le port indiqué.
-# Mise à jour automatique : sites-update.timer lance update.sh toutes les 2 minutes.
+# Déployé par le workflow .github/workflows/deploy.yml (VPN + SSH) : rien n'est cloné sur le serveur.
 #
 # Port  Chemin                    Repo GitHub
 # 8101  /                         hugomeuriel-portfolio

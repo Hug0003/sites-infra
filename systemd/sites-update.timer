@@ -1,9 +1,0 @@
-[Unit]
-Description=Mise à jour des sites toutes les 2 minutes
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=2min
-
-[Install]
-WantedBy=timers.target

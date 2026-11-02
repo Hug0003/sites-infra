@@ -1,0 +1,210 @@
+name: Deploy (VPN)
+
+# Déploie tous les sites de hugomeuriel.fr sur 192.168.11.134, via le VPN, comme ICE-theaters.
+# Rien n'est cloné sur le serveur : à chaque déploiement, ce workflow y copie docker-compose.yml,
+# les configs Nginx et les fichiers .env (depuis les secrets), puis récupère les images sur GHCR.
+#
+# Déclenché par :
+#  - un push sur main de ce repo (changement de compose, de config Nginx…) ;
+#  - chaque repo de site, après publication de sa nouvelle image (événement « site-updated ») ;
+#  - à la main (onglet Actions → Run workflow).
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [site-updated]
+  workflow_dispatch:
+
+# Un seul déploiement à la fois ; les suivants attendent au lieu d'annuler celui en cours.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DEPLOY_PATH: /opt/sites
+
+jobs:
+  deploy:
+    # Runners GitHub par défaut. Pour un runner auto-hébergé : variable de dépôt RUNS_ON = self-hosted.
+    runs-on: ${{ vars.RUNS_ON || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    env:
+      # Si le runner est déjà dans le réseau du serveur : variable de dépôt USE_VPN = false.
+      USE_VPN: ${{ vars.USE_VPN != 'false' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Origin of this deployment
+        run: |
+          echo "Déclencheur : ${{ github.event_name }}"
+          echo "Site mis à jour : ${{ github.event.client_payload.repo || '(aucun, déploiement complet)' }} ${{ github.event.client_payload.sha }}"
+
+      # Échoue tout de suite si un secret manque.
+      - name: Check secrets
+        env:
+          VPN_SERVER: ${{ secrets.VPN_SERVER }}
+          VPN_USER: ${{ secrets.VPN_USER }}
+          VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          ENV_CRUSHBRITO: ${{ secrets.ENV_CRUSHBRITO }}
+          ENV_PIZZAMAMA: ${{ secrets.ENV_PIZZAMAMA }}
+          ENV_SUNORCLOUD: ${{ secrets.ENV_SUNORCLOUD }}
+        run: |
+          required="SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS GHCR_TOKEN ENV_CRUSHBRITO ENV_PIZZAMAMA ENV_SUNORCLOUD"
+          if [ "$USE_VPN" = "true" ]; then required="VPN_SERVER VPN_USER VPN_PASSWORD $required"; fi
+          missing=""
+          for name in $required; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets manquants :$missing"
+            exit 1
+          fi
+
+      - name: Install Strongswan
+        if: env.USE_VPN == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strongswan strongswan-pki libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins ca-certificates
+          sudo mkdir -p /etc/ipsec.d/cacerts
+          sudo ln -nsf /etc/ssl/certs/* /etc/ipsec.d/cacerts/
+
+      - name: Configure and Connect VPN (IKEv2)
+        if: env.USE_VPN == 'true'
+        env:
+          VPN_SERVER: ${{ secrets.VPN_SERVER }}
+          VPN_USER: ${{ secrets.VPN_USER }}
+          VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
+        run: |
+          printf "%s : EAP \"%s\"\n" "${VPN_USER}" "${VPN_PASSWORD}" | sudo tee /etc/ipsec.secrets > /dev/null
+
+          cat <<EOF | sudo tee /etc/ipsec.conf > /dev/null
+          config setup
+              charondebug="ike 1, knl 1, cfg 0"
+              uniqueids=no
+
+          conn freebox
+              keyexchange=ikev2
+              fragmentation=yes
+              dpdaction=clear
+              dpddelay=300s
+              eap_identity=${VPN_USER}
+              left=%defaultroute
+              leftauth=eap-mschapv2
+              leftid=%any
+              leftsourceip=%config
+              right=${VPN_SERVER}
+              rightid=%any
+              rightauth=pubkey
+              rightsubnet=0.0.0.0/0
+              rightca=%same
+              auto=add
+          EOF
+
+          sudo ipsec restart
+          sleep 5
+          sudo ipsec up freebox
+
+      - name: Deploy via SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          ENV_CRUSHBRITO: ${{ secrets.ENV_CRUSHBRITO }}
+          ENV_PIZZAMAMA: ${{ secrets.ENV_PIZZAMAMA }}
+          ENV_SUNORCLOUD: ${{ secrets.ENV_SUNORCLOUD }}
+        run: |
+          # Clé et empreinte du serveur dans un dossier temporaire du job, supprimé à la fin.
+          SSH_DIR="$RUNNER_TEMP/deploy-ssh"
+          trap 'rm -rf "$SSH_DIR"' EXIT
+          install -d -m 700 "$SSH_DIR"
+          echo "$SSH_KEY" | tr -d '\r' > "$SSH_DIR/id_key"
+          chmod 600 "$SSH_DIR/id_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$SSH_DIR/known_hosts"
+          cat > "$SSH_DIR/config" <<EOF
+          Host *
+            IdentityFile $SSH_DIR/id_key
+            IdentitiesOnly yes
+            UserKnownHostsFile $SSH_DIR/known_hosts
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ConnectTimeout 20
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+          EOF
+          SSH="ssh -F $SSH_DIR/config $SSH_USER@$SSH_HOST"
+
+          echo "→ Dossiers"
+          $SSH "mkdir -p $DEPLOY_PATH/nginx $DEPLOY_PATH/env $DEPLOY_PATH/data/crushbrito/media $DEPLOY_PATH/data/pizzamama/media"
+
+          echo "→ docker-compose.yml et configs Nginx"
+          scp -F "$SSH_DIR/config" docker-compose.yml "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/docker-compose.yml"
+          scp -F "$SSH_DIR/config" nginx/*.conf "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/nginx/"
+
+          echo "→ Fichiers .env (depuis les secrets, lisibles par hugo-portfolio seulement)"
+          for app in crushbrito pizzamama sunorcloud; do
+            var="ENV_$(echo "$app" | tr a-z A-Z)"
+            printf '%s\n' "${!var}" | tr -d '\r' | $SSH "umask 077 && cat > $DEPLOY_PATH/env/$app.env"
+          done
+
+          echo "→ Images et redémarrage des conteneurs modifiés"
+          # Script envoyé par l'entrée standard : le jeton n'apparaît dans aucune ligne de commande.
+          $SSH bash -s <<EOSH
+            set -e
+            cd $DEPLOY_PATH
+            # Connexion GHCR le temps du pull seulement : aucun jeton ne reste sur le serveur.
+            export DOCKER_CONFIG=\$(mktemp -d)
+            trap 'rm -rf "\$DOCKER_CONFIG"' EXIT
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin > /dev/null
+
+            # Les applis Django (utilisateur 1000 dans le conteneur) doivent pouvoir écrire leurs données.
+            docker run --rm -v $DEPLOY_PATH/data:/data alpine:3.20 chown -R 1000:1000 /data
+
+            docker compose pull -q
+            docker compose up -d --remove-orphans
+            docker image prune -f > /dev/null
+
+            echo "État :"
+            docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+          EOSH
+
+      # Vérifie que chaque site répond depuis le serveur lui-même.
+      - name: Health check
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          SSH_DIR="$RUNNER_TEMP/health-ssh"
+          trap 'rm -rf "$SSH_DIR"' EXIT
+          install -d -m 700 "$SSH_DIR"
+          echo "$SSH_KEY" | tr -d '\r' > "$SSH_DIR/id_key"; chmod 600 "$SSH_DIR/id_key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$SSH_DIR/known_hosts"
+          ssh -i "$SSH_DIR/id_key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -o BatchMode=yes \
+            "$SSH_USER@$SSH_HOST" "HOST=$SSH_HOST bash -s" <<'EOSH'
+            sleep 10; fail=0
+            for p in 8101 8102 8103 8104 8105 8106 8107 8108 8111 8112; do
+              c=$(curl -s -o /dev/null -m 10 -w "%{http_code}" -H "Host: hugomeuriel.fr" -H "X-Forwarded-Proto: https" "http://$HOST:$p/")
+              echo "port $p : $c"
+              case "$c" in 200|301|302) ;; *) fail=1 ;; esac
+            done
+            exit $fail
+          EOSH
+
+      - name: Stop VPN
+        if: always() && env.USE_VPN == 'true'
+        run: |
+          sudo ipsec down freebox || true
+          sudo ipsec stop || true
