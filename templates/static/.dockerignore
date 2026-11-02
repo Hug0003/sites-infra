@@ -1,0 +1,16 @@
+.git
+.github
+.vscode
+.gitignore
+.gitattributes
+.prettierrc
+.dockerignore
+node_modules
+sass
+package.json
+package-lock.json
+requirements.txt
+*.py
+*.md
+*.tar.gz
+Capture*

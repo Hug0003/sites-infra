@@ -1,0 +1,9 @@
+[Unit]
+Description=Mise à jour des sites (docker compose pull + up)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/opt/sites/update.sh
