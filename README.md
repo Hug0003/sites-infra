@@ -1,5 +1,7 @@
 # sites-infra
 
+> Tuto complet (mise en place, quotidien, dépannage) : [DEPLOIEMENT.md](DEPLOIEMENT.md)
+
 Hébergement de hugomeuriel.fr sur le serveur deva2 (192.168.11.134), derrière l'Apache de 192.168.11.131.
 
 ```
