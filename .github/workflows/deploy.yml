@@ -173,17 +173,16 @@ jobs:
           EOF
           SSH="ssh -F $SSH_DIR/config $SSH_USER@$SSH_HOST"
 
-          echo "→ Dossiers"
-          $SSH "mkdir -p $DEPLOY_PATH/nginx $DEPLOY_PATH/env $DEPLOY_PATH/data/crushbrito/media $DEPLOY_PATH/data/pizzamama/media"
+          echo "→ Dossiers (et ménage de l'ancienne version à 12 conteneurs)"
+          $SSH "mkdir -p $DEPLOY_PATH/env $DEPLOY_PATH/data/crushbrito/media $DEPLOY_PATH/data/pizzamama/media && rm -rf $DEPLOY_PATH/nginx"
 
-          echo "→ docker-compose.yml et configs Nginx"
+          echo "→ docker-compose.yml"
           scp -F "$SSH_DIR/config" docker-compose.yml "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/docker-compose.yml"
-          scp -F "$SSH_DIR/config" nginx/*.conf "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/nginx/"
 
-          echo "→ Fichiers .env (depuis les secrets, lisibles par hugo-portfolio seulement)"
+          echo "→ Fichiers .env (depuis les secrets, lisibles uniquement par l'utilisateur du conteneur)"
           for app in crushbrito pizzamama sunorcloud; do
             var="ENV_$(echo "$app" | tr a-z A-Z)"
-            printf '%s\n' "${!var}" | tr -d '\r' | $SSH "umask 077 && cat > $DEPLOY_PATH/env/$app.env"
+            printf '%s\n' "${!var}" | tr -d '\r' | $SSH "docker run --rm -i -v $DEPLOY_PATH/env:/env alpine:3.20 sh -c 'umask 077 && cat > /env/$app.env && chown 1000:1000 /env/$app.env'"
           done
 
           echo "→ Images et redémarrage des conteneurs modifiés"
@@ -196,7 +195,7 @@ jobs:
             trap 'rm -rf "\$DOCKER_CONFIG"' EXIT
             echo "$GHCR_TOKEN" | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin > /dev/null
 
-            # Les applis Django (utilisateur 1000 dans le conteneur) doivent pouvoir écrire leurs données.
+            # Le conteneur (utilisateur 1000) doit pouvoir écrire les données des applis Django.
             docker run --rm -v $DEPLOY_PATH/data:/data alpine:3.20 chown -R 1000:1000 /data
 
             docker compose pull -q
@@ -207,7 +206,7 @@ jobs:
             docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
           EOSH
 
-      # Vérifie que chaque site répond depuis le serveur lui-même.
+      # Vérifie que le portfolio et chaque projet répondent, depuis le serveur lui-même.
       - name: Health check
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -222,12 +221,16 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$SSH_DIR/known_hosts"
           ssh -i "$SSH_DIR/id_key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$SSH_DIR/known_hosts" -o BatchMode=yes \
             "$SSH_USER@$SSH_HOST" "HOST=$SSH_HOST bash -s" <<'EOSH'
-            sleep 10; fail=0
-            for p in 8101 8102 8103 8104 8105 8106 8107 8108 8111 8112; do
-              c=$(curl -s -o /dev/null -m 10 -w "%{http_code}" -H "Host: hugomeuriel.fr" -H "X-Forwarded-Proto: https" "http://$HOST:$p/")
-              echo "port $p : $c"
-              case "$c" in 200|301|302) ;; *) fail=1 ;; esac
+            sleep 15; fail=0
+            for p in / /projets/guessmynumber/ /projets/icecream/ /projets/natours/ /projets/nexter/ /projets/trillo/ /projets/robot/ /projets/sunorcloud/ /projets/crushbrito/ /projets/pizzamama/; do
+              c=$(curl -s -o /dev/null -m 10 -w "%{http_code}" -H "Host: hugomeuriel.fr" -H "X-Forwarded-Proto: https" "http://$HOST:8101$p")
+              echo "$c $p"
+              [ "$c" = 200 ] || fail=1
             done
+            if [ "$fail" != 0 ]; then
+              echo "--- Derniers logs du conteneur"
+              docker logs --tail 50 hugomeuriel-site-1 2>&1
+            fi
             exit $fail
           EOSH
 
